@@ -435,8 +435,15 @@ class PanelAPIHandler(BaseHTTPRequestHandler):
                     with open(logo_path, "rb") as f:
                         img_data = f.read()
                     self.send_response(200)
-                    self.send_header('Content-Type', 'application/octet-stream')
-                    self.send_header('Cache-Control', 'public, max-age=3600')
+                    ct = 'image/png'
+                    if img_data[:3] == b'\xff\xd8\xff':
+                        ct = 'image/jpeg'
+                    elif img_data[:4] == b'RIFF' and img_data[8:12] == b'WEBP':
+                        ct = 'image/webp'
+                    elif img_data[:3] == b'GIF':
+                        ct = 'image/gif'
+                    self.send_header('Content-Type', ct)
+                    self.send_header('Cache-Control', 'no-cache')
                     self.end_headers()
                     self.wfile.write(img_data)
                 else:
