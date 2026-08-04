@@ -180,9 +180,9 @@ def write_resellers(resellers):
         for r in resellers:
             f.write(format_reseller_line(r))
 
-def calculate_credit_cost(days):
-    """Calculate credit cost: 1 credit per 30 days, rounded up."""
-    return math.ceil(days / 30)
+def calculate_credit_cost(days, conn_limit=1):
+    """Calculate credit cost: 1 credit per 30 days per device, rounded up."""
+    return math.ceil(days / 30) * max(1, conn_limit)
 
 # --- ONLINE SESSIONS ---
 def get_online_sessions(target_user=None):
@@ -913,7 +913,8 @@ class PanelAPIHandler(BaseHTTPRequestHandler):
                 if r.get("type") == "credits":
                     # Credit-based: check credit balance
                     days = int(body.get("days", 30))
-                    cost = calculate_credit_cost(days)
+                    conn = int(body.get("conn_limit", 1))
+                    cost = calculate_credit_cost(days, conn)
                     if r.get("credits", 0) < cost:
                         return self.send_json(403, {"error": f"Not enough credits. Need {cost}, have {r.get('credits', 0)}"})
                 else:
@@ -937,7 +938,7 @@ class PanelAPIHandler(BaseHTTPRequestHandler):
                 resellers = read_resellers()
                 r = next((x for x in resellers if x["username"] == session["username"]), None)
                 if r and r.get("type") == "credits":
-                    cost = calculate_credit_cost(days)
+                    cost = calculate_credit_cost(days, conn)
                     r["credits"] = max(0, r.get("credits", 0) - cost)
                     write_resellers(resellers)
             
@@ -959,7 +960,8 @@ class PanelAPIHandler(BaseHTTPRequestHandler):
                 
                 if r.get("type") == "credits":
                     days_val = int(body.get("days", 30))
-                    cost_per = calculate_credit_cost(days_val)
+                    conn_val = int(body.get("conn_limit", 1))
+                    cost_per = calculate_credit_cost(days_val, conn_val)
                     count_requested = int(body.get("count", 1))
                     max_affordable = r.get("credits", 0) // cost_per if cost_per > 0 else 0
                     remaining_quota = max_affordable
@@ -1003,7 +1005,8 @@ class PanelAPIHandler(BaseHTTPRequestHandler):
                 r = next((x for x in resellers if x["username"] == session["username"]), None)
                 if r and r.get("type") == "credits":
                     days_val = int(body.get("days", 30))
-                    total_cost = len(created) * calculate_credit_cost(days_val)
+                    conn_val = int(body.get("conn_limit", 1))
+                    total_cost = len(created) * calculate_credit_cost(days_val, conn_val)
                     r["credits"] = max(0, r.get("credits", 0) - total_cost)
                     write_resellers(resellers)
             
@@ -1060,7 +1063,7 @@ class PanelAPIHandler(BaseHTTPRequestHandler):
                 r = next((x for x in resellers if x["username"] == session["username"]), None)
                 if r and r.get("type") == "credits":
                     days_val = hours // 24 if hours >= 24 else 1
-                    cost = calculate_credit_cost(days_val)
+                    cost = calculate_credit_cost(days_val, conn)
                     r["credits"] = max(0, r.get("credits", 0) - cost)
                     write_resellers(resellers)
             
@@ -1155,7 +1158,11 @@ class PanelAPIHandler(BaseHTTPRequestHandler):
                 resellers = read_resellers()
                 r = next((x for x in resellers if x["username"] == session["username"]), None)
                 if r and r.get("type") == "credits":
-                    cost = calculate_credit_cost(days)
+                    # Look up the user's conn_limit for renewal cost
+                    users = read_db()
+                    u = next((x for x in users if x["username"] == username), None)
+                    user_conn = u.get("conn_limit", 1) if u else 1
+                    cost = calculate_credit_cost(days, user_conn)
                     if r.get("credits", 0) < cost:
                         return self.send_json(403, {"error": f"Not enough credits. Need {cost}, have {r.get('credits', 0)}"})
                     r["credits"] = max(0, r.get("credits", 0) - cost)
