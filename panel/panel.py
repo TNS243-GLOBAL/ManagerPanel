@@ -1017,55 +1017,68 @@ class PanelAPIHandler(BaseHTTPRequestHandler):
     def handle_post_trial_user(self, body, session):
         try:
             owner = session.get("username", "admin") if session.get("role") == "reseller" else "admin"
+            is_reseller = session.get("role") == "reseller"
 
-            # Reseller quota check
-            if session.get("role") == "reseller":
+            if is_reseller:
                 resellers = read_resellers()
                 r = next((x for x in resellers if x["username"] == session["username"]), None)
                 if not r:
                     return self.send_json(403, {"error": "Reseller account not found"})
+                
+                # Reseller trials: max 5 active trial accounts, 10 min lifetime, no credit cost
                 users = read_db()
-                owned = [u for u in users if u.get("owner") == session["username"]]
-                if len(owned) >= r["max_users"]:
-                    return self.send_json(403, {"error": f"User limit reached ({r['max_users']})"})
+                owned_trials = [u for u in users if u.get("owner") == session["username"] and u.get("account_type") == "trial"]
+                if len(owned_trials) >= 5:
+                    return self.send_json(403, {"error": "Trial limit reached (max 5 active trials)"})
+                
+                # Force 10-minute trial for resellers
+                hours = 0  # Will use minutes instead
+                minutes = 10
+                conn = 1
+                bw = 0
+            else:
+                # Admin: use whatever they specify
+                hours = int(body.get("hours", 1))
+                minutes = 0
+                conn = int(body.get("conn_limit", 1))
+                bw = float(body.get("bandwidth_gb", 0))
 
             un = body.get("username", "")
             if not un:
                 import random, string
                 un = "trial_" + "".join(random.choices(string.ascii_lowercase + string.digits, k=5))
             pwd = body.get("password", "") or generate_password()
-            hours = int(body.get("hours", 1))
-            conn = int(body.get("conn_limit", 1))
-            bw = float(body.get("bandwidth_gb", 0))
             
             # Calculate days for expiry
-            if hours >= 24:
+            if is_reseller:
+                days = 1  # Minimum for chage, at job does real cleanup at 10 min
+            elif hours >= 24:
                 days = hours // 24
             else:
-                days = 1  # At least 1 day for chage, at job does real cleanup
+                days = 1
             
             new_u = self._create_user(un, pwd, days, conn, bw, 0, acct_type="trial", owner=owner)
             
             # Schedule auto-cleanup via 'at' daemon
             cleanup_script = "/usr/local/bin/firewallfalcon-trial-cleanup.sh"
             if os.path.exists(cleanup_script):
-                run_cmd(f"echo '{cleanup_script} {un}' | at now + {hours} hours", ignore_errors=True)
+                if is_reseller:
+                    run_cmd(f"echo '{cleanup_script} {un}' | at now + {minutes} minutes", ignore_errors=True)
+                else:
+                    run_cmd(f"echo '{cleanup_script} {un}' | at now + {hours} hours", ignore_errors=True)
             
             # Calculate expiry timestamp for display
             from datetime import datetime, timedelta
-            expiry_time = (datetime.now() + timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
-            new_u["expiry_time"] = expiry_time
-            new_u["hours"] = hours
+            if is_reseller:
+                expiry_time = (datetime.now() + timedelta(minutes=minutes)).strftime("%Y-%m-%d %H:%M:%S")
+                new_u["expiry_time"] = expiry_time
+                new_u["minutes"] = minutes
+            else:
+                expiry_time = (datetime.now() + timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+                new_u["expiry_time"] = expiry_time
+                new_u["hours"] = hours
             
-            # Deduct credits if credit-based reseller
-            if session.get("role") == "reseller":
-                resellers = read_resellers()
-                r = next((x for x in resellers if x["username"] == session["username"]), None)
-                if r and r.get("type") == "credits":
-                    days_val = hours // 24 if hours >= 24 else 1
-                    cost = calculate_credit_cost(days_val, conn)
-                    r["credits"] = max(0, r.get("credits", 0) - cost)
-                    write_resellers(resellers)
+            # No credit deduction for reseller trials
             
             self.send_json(200, new_u)
         except Exception as e:
@@ -1329,10 +1342,11 @@ class PanelAPIHandler(BaseHTTPRequestHandler):
             rtype = body.get("type", "quota")
             if rtype == "credits":
                 credits_amount = int(body.get("credits", 0))
+                credit_days = int(body.get("days", 0))
                 new_r = {
                     "username": un,
                     "password": pwd,
-                    "expire_date": "Never",
+                    "expire_date": calculate_expire_date(credit_days) if credit_days > 0 else "Never",
                     "max_users": 0,
                     "enabled": True,
                     "type": "credits",

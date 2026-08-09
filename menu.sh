@@ -995,6 +995,7 @@ while true; do
             if [[ "$quota_bytes" =~ ^[0-9]+$ ]] && (( quota_bytes > 0 && new_total >= quota_bytes )); then
                 if ! $user_locked; then
                     usermod -L "$user" &>/dev/null
+                    killall -u "$user" -9 &>/dev/null
                     locked_users["$user"]=1
                     user_locked=true
                 fi
@@ -1015,6 +1016,7 @@ while true; do
             if [[ "$d_quota_bytes" =~ ^[0-9]+$ ]] && (( d_quota_bytes > 0 && new_daily_total >= d_quota_bytes )); then
                 if ! $user_locked; then
                     usermod -L "$user" &>/dev/null
+                    killall -u "$user" -9 &>/dev/null
                     locked_users["$user"]=1
                     user_locked=true
                     touch "$BW_DIR/${user}.daily_locked"
