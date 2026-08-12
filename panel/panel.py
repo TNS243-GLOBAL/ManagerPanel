@@ -1032,14 +1032,12 @@ class PanelAPIHandler(BaseHTTPRequestHandler):
                     return self.send_json(403, {"error": "Trial limit reached (max 5 active trials)"})
                 
                 # Force 10-minute trial for resellers
-                hours = 0  # Will use minutes instead
-                minutes = 10
+                total_minutes = 10
                 conn = 1
                 bw = 0
             else:
-                # Admin: use whatever they specify
-                hours = int(body.get("hours", 1))
-                minutes = 0
+                # Admin: accept minutes directly from frontend
+                total_minutes = int(body.get("minutes", 60))
                 conn = int(body.get("conn_limit", 1))
                 bw = float(body.get("bandwidth_gb", 0))
 
@@ -1049,34 +1047,28 @@ class PanelAPIHandler(BaseHTTPRequestHandler):
                 un = "trial_" + "".join(random.choices(string.ascii_lowercase + string.digits, k=5))
             pwd = body.get("password", "") or generate_password()
             
-            # Calculate days for expiry
-            if is_reseller:
-                days = 1  # Minimum for chage, at job does real cleanup at 10 min
-            elif hours >= 24:
-                days = hours // 24
-            else:
-                days = 1
+            # Always set days=1 minimum for chage (system expiry), real cleanup is via at/limiter
+            days = max(1, total_minutes // 1440)
             
             new_u = self._create_user(un, pwd, days, conn, bw, 0, acct_type="trial", owner=owner)
             
-            # Schedule auto-cleanup via 'at' daemon
+            # Store trial expiry timestamp for backup cleanup by limiter
+            from datetime import datetime, timedelta
+            expiry_dt = datetime.now() + timedelta(minutes=total_minutes)
+            expiry_ts = int(expiry_dt.timestamp())
+            trial_expiry_file = f"/etc/firewallfalcon/bandwidth/{un}.trial_expiry"
+            os.makedirs("/etc/firewallfalcon/bandwidth", exist_ok=True)
+            with open(trial_expiry_file, "w") as f:
+                f.write(str(expiry_ts))
+            
+            # Schedule auto-cleanup via 'at' daemon (primary method)
             cleanup_script = "/usr/local/bin/firewallfalcon-trial-cleanup.sh"
             if os.path.exists(cleanup_script):
-                if is_reseller:
-                    run_cmd(f"echo '{cleanup_script} {un}' | at now + {minutes} minutes", ignore_errors=True)
-                else:
-                    run_cmd(f"echo '{cleanup_script} {un}' | at now + {hours} hours", ignore_errors=True)
+                run_cmd(f"echo '{cleanup_script} {un}' | at now + {total_minutes} minutes", ignore_errors=True)
             
-            # Calculate expiry timestamp for display
-            from datetime import datetime, timedelta
-            if is_reseller:
-                expiry_time = (datetime.now() + timedelta(minutes=minutes)).strftime("%Y-%m-%d %H:%M:%S")
-                new_u["expiry_time"] = expiry_time
-                new_u["minutes"] = minutes
-            else:
-                expiry_time = (datetime.now() + timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
-                new_u["expiry_time"] = expiry_time
-                new_u["hours"] = hours
+            expiry_time = expiry_dt.strftime("%Y-%m-%d %H:%M:%S")
+            new_u["expiry_time"] = expiry_time
+            new_u["minutes"] = total_minutes
             
             # No credit deduction for reseller trials
             

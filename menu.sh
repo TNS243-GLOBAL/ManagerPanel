@@ -745,6 +745,30 @@ while true; do
     done
 
     printf -v current_ts '%(%s)T' -1
+
+    # Backup trial cleanup: check .trial_expiry files for expired trials
+    for trial_file in "$BW_DIR/"*.trial_expiry; do
+        [[ -f "$trial_file" ]] || continue
+        trial_exp_ts=0
+        read -r trial_exp_ts < "$trial_file" 2>/dev/null || trial_exp_ts=0
+        [[ "$trial_exp_ts" =~ ^[0-9]+$ ]] || trial_exp_ts=0
+        if (( trial_exp_ts > 0 && current_ts >= trial_exp_ts )); then
+            trial_user=$(basename "$trial_file" .trial_expiry)
+            # Run the cleanup script if it exists, otherwise do inline cleanup
+            if [[ -x "$TRIAL_CLEANUP_SCRIPT" ]]; then
+                "$TRIAL_CLEANUP_SCRIPT" "$trial_user" &>/dev/null
+            else
+                killall -u "$trial_user" -9 &>/dev/null
+                pkill -9 -u "$trial_user" &>/dev/null
+                userdel -rf "$trial_user" &>/dev/null
+                sed -i "/^${trial_user}:/d" "$DB_FILE"
+                rm -f "$BW_DIR/${trial_user}.usage" "$BW_DIR/${trial_user}.daily_usage"
+                rm -rf "$BW_DIR/pidtrack/${trial_user}"
+            fi
+            rm -f "$trial_file"
+        fi
+    done
+
     dynamic_banners_enabled=false
 
     # Reset associative arrays each cycle (unset first to avoid stale data)
@@ -1131,8 +1155,8 @@ userdel -rf "$username" &>/dev/null
 # Remove from DB
 sed -i "/^${username}:/d" "$DB_FILE"
 
-# Remove bandwidth tracking
-rm -f "$BW_DIR/${username}.usage"
+# Remove bandwidth tracking and trial expiry marker
+rm -f "$BW_DIR/${username}.usage" "$BW_DIR/${username}.daily_usage" "$BW_DIR/${username}.trial_expiry"
 rm -rf "$BW_DIR/pidtrack/${username}"
 TREOF
     chmod +x "$TRIAL_CLEANUP_SCRIPT"
