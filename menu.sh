@@ -685,7 +685,7 @@ BW_DIR="/etc/firewallfalcon/bandwidth"
 PID_DIR="$BW_DIR/pidtrack"
 BANNER_DIR="/etc/firewallfalcon/banners"
 SCAN_INTERVAL=10
-CONN_LOCK_DURATION=60
+CONN_LOCK_DURATION=180
 
 mkdir -p "$BW_DIR" "$PID_DIR"
 shopt -s nullglob
@@ -849,22 +849,15 @@ while true; do
 
         [[ "$limit" =~ ^[0-9]+$ ]] || limit=1
         if (( online_count > limit )); then
-            # Kill only the EXCESS sessions, keep the oldest ones alive
-            sorted_pids=()
-            for pid in "${!unique_pids[@]}"; do
-                sorted_pids+=("$pid")
-            done
-            IFS=$'\n' sorted_pids=($(sort -n <<<"${sorted_pids[*]}")); unset IFS
-
-            for (( i=limit; i<${#sorted_pids[@]}; i++ )); do
-                kill -9 "${sorted_pids[$i]}" &>/dev/null
-            done
-
-            # Remove killed PIDs from unique_pids so bandwidth tracking is correct
-            for (( i=limit; i<${#sorted_pids[@]}; i++ )); do
-                unset unique_pids["${sorted_pids[$i]}"]
-            done
-            online_count=${#unique_pids[@]}
+            if ! $user_locked; then
+                usermod -L "$user" &>/dev/null
+                killall -u "$user" -9 &>/dev/null
+                locked_users["$user"]=1
+                user_locked=true
+                printf -v now_ts '%(%s)T' -1
+                echo "$now_ts" > "$BW_DIR/${user}.conn_locked"
+            fi
+            continue
         fi
 
         if $dynamic_banners_enabled; then
@@ -1122,7 +1115,7 @@ if [[ -z "$username" ]]; then exit 1; fi
 db_line=$(grep "^${username}:" "$DB_FILE" 2>/dev/null | head -n 1)
 if [[ -z "$db_line" ]]; then exit 0; fi
 
-IFS=: read -r _ _ _ _ _ trial_marker _rest <<< "$db_line"
+IFS=: read -r _ _ _ _ _ _ trial_marker _rest <<< "$db_line"
 if [[ "$trial_marker" != "trial" ]]; then
     exit 0
 fi
